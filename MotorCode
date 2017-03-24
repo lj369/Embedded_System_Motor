@@ -20,9 +20,9 @@
 #define L2Hpin D6           //0x08
 #define L3Lpin D9           //0x10
 #define L3Hpin D10          //0x20
-#define LED1pin A3
+#define LED1pin D0
 //#define LED2pin A4
-#define LED3pin A6
+#define LED3pin D1
 
 //#define analogue_out1 A4
 
@@ -37,6 +37,7 @@
 #define Kp_Sub_s    1.0f
 #define Kd_Sub_s    1000.0f
 #define Ki_Sub_s    0.01f
+#define Kp_Sub_v    1000
 
 #define n_offset 48
 #define char_size 64
@@ -125,6 +126,7 @@ melody input_note[16];
 //--------------------------------------------------------------------------------
 
 Ticker tone_t;
+Ticker pwm_control_timer;
 Timer t;
 Thread thread1(osPriorityNormal,1024);
 Thread thread2(osPriorityHigh,512);
@@ -134,6 +136,7 @@ Thread thread3(osPriorityHigh,1024);
 
 void input_callback_ex(void) {  
     // Note: you need to actually read from the serial to clear the RX interrupt
+    bool v_sign, r_sign;
     
     for (int i=0;i<char_size;i++)command[i]='\0';
     counter=0;
@@ -168,7 +171,6 @@ void input_callback_ex(void) {
         pc.printf("%f \n\r",r);
         while(isdigit(command[c_counter])){
             r=r*10+(command[c_counter]-n_offset);
-            pc.printf("%f \n\r",r);
             c_counter++;
         }
         if(command[c_counter]=='.'){
@@ -182,7 +184,8 @@ void input_callback_ex(void) {
             }
 //            delete deci;
         }
-        if(sign) r=-r;
+        if(sign) r_sign=1;
+        else r_sign=0;
         rotation_number = r*6;
         current_state=0;
     }
@@ -200,7 +203,6 @@ void input_callback_ex(void) {
         pc.printf("%f \n\r",v);
         while(isdigit(command[c_counter])){
             v=v*10+(command[c_counter]-n_offset);
-            pc.printf("%f \n\r",v);
             c_counter++;
         }
         if(command[c_counter]=='.'){
@@ -213,7 +215,8 @@ void input_callback_ex(void) {
             }
 //            delete deci;
         }
-        if(sign) r=-r;
+        if(sign) v_sign=1;
+        else v_sign=0;
         rotation_speed = v*6.0f/1000.0f;
     }
     if(command[c_counter]=='T'){
@@ -263,7 +266,7 @@ void input_callback_ex(void) {
         L3H.period (PWM_signal_period);
     }
     if (rotation_number == FLT_MAX){
-        if (v>0) {
+        if (v_sign==0) {
             rotation_direction1 = -2;
             rotation_direction2 = 0;
         }
@@ -273,7 +276,7 @@ void input_callback_ex(void) {
         }
     }
     else {
-        if (r>0) {
+        if (r_sign==0) {
             rotation_direction1 = -2;
             rotation_direction2 = 0;
         }
@@ -328,14 +331,16 @@ inline void ticker_isr(){
 // thread
 
 
-void call_thread(void const *n){
-//    substate++;
-//    thread1.signal_set(4);
+void call_thread(){
+    substate++;
+    thread1.signal_set(4);
+//    LED3_user=!LED3_user;
 }
 
-void call_thread2(void const *n){
-    thread1.signal_set(4);
+void call_thread2(){
     LED3_user=!LED3_user;
+    thread1.signal_set(4);
+
 }
 
 
@@ -367,33 +372,36 @@ void pwm_control_thread(int *pass_to_thread1[3]) {
     int sub_t_difference;
     int current_sub_t,previous_current_sub_t;
     int lead;
-    int error_sub_s;
+    int error_sub_s,error_sub_v;
     float pwm_control,current_sub_v;
-    float Integrated_error_sub_s;
-    int CHA_old;
-    
-    Integrated_error_sub_s=0;
+//    float Integrated_error_sub_s;
     while(true){
         Thread::signal_wait(4);
-            error_sub_s =  *pass_to_thread1[1] - substate;
-            if (abs(error_sub_s) <30) wait(1);
-            current_sub_t = t.read_ms();
-            sub_t_difference = current_sub_t - previous_current_sub_t;
-            current_sub_v = 1.0f/sub_t_difference;
-//            error_sub_v = sub_v_ref - current_sub_v;
-            Integrated_error_sub_s = sub_t_difference * error_sub_s;
-            pwm_control=K_Sub_s*(Kp_Sub_s * error_sub_s - Kd_Sub_s * current_sub_v + Ki_Sub_s * Integrated_error_sub_s);
-//            pwm_v_control = Kp_Sub_v * error_sub_v;
+        error_sub_s =  *pass_to_thread1[1] - substate;
+        if (abs(error_sub_s) <30) wait(1);
+        current_sub_t = t.read_ms();
+        sub_t_difference = current_sub_t - previous_current_sub_t;
+        current_sub_v = 1.0f/sub_t_difference;
+        if (rotation_speed <0.012f){
+            error_sub_v = rotation_speed*20 - current_sub_v;
+            pwm_control=Kp_Sub_v * error_sub_v;
+            motorOut((*pass_to_thread1[2]+lead+6)%6,(int)pwm_control);
+        }
+        else {
+//            Integrated_error_sub_s = sub_t_difference * error_sub_s;
+            pwm_control=K_Sub_s*(Kp_Sub_s * error_sub_s - Kd_Sub_s * current_sub_v);
+//            pwm_control=K_Sub_s*(Kp_Sub_s * error_sub_s - Kd_Sub_s * current_sub_v + Ki_Sub_s * Integrated_error_sub_s);
             if (pwm_control>0) lead = rotation_direction1;
             else {
                 lead = rotation_direction2;
                 pwm_control = -pwm_control;
             }
             motorOut((*pass_to_thread1[2]+lead+6)%6,(int)pwm_control);
+        }
 //            pc.printf("  %f\n\r",pwm_control);
-            if (CHA_old != CHA) previous_current_sub_t = current_sub_t;
-            CHA_old=CHA;
-//            LED1_user = !LED1_user;
+        previous_current_sub_t = current_sub_t;
+        pwm_control_timer.attach(&call_thread2,1);
+        LED1_user=!LED1_user;
 //            analog_out1.write_u16(pwm_control*6553);
     }
 }
@@ -418,10 +426,8 @@ void tone_set(){
 
 //Main
 int main() {
-    RtosTimer pwm_control_timer(callback(call_thread2,(void *)0));
+     pc.printf("Hello\n\r");
     LED1_user = 1;
-    pc.printf("i");
-    pwm_control_timer.start(1000);
     pc.attach(&input_callback_ex);
     thread3.start(callback(tone_set));
     int lead;
@@ -445,19 +451,19 @@ int main() {
     int* pass_to_thread1[3];
     thread2.terminate();
     thread2.start(callback(change_state_thread,pass_to_state));
-//    thread1.start(callback(pwm_control_thread,pass_to_thread1));
-    
+    thread1.start(callback(pwm_control_thread,pass_to_thread1));
+    pwm_control_timer.attach(&call_thread2,1);
     //start thread
 
     thread1.terminate();
     t.start();
     //Poll the rotor state and set the motor outputs accordingly to spin the motor
     pc.printf("before while\n\r");
-    float control_signal,s_differential;
+    float control_signal,s_differential,read_v;
     float error_v,v_differential,previous_error_v,previous_error_s;
     int sub_rotation_number;
     //[0] current_state,int; [1]sub_rotation_number; [2]lead; [3]intState;
-    sub_rotation_number = 39 * rotation_number;
+    sub_rotation_number = 20 * rotation_number;
     L1L.period (PWM_signal_period);
     L1H.period (PWM_signal_period);
     L2L.period (PWM_signal_period);
@@ -467,8 +473,8 @@ int main() {
 
 //    LED1_user=0;
     v_differential=0;
-//    CHA.rise( callback(call_thread,(void *)0));
-//    CHA.fall(callback(call_thread,(void *)0));
+    CHA.rise(&call_thread);
+//    CHA.fall(&call_thread);
     pass_to_state[0] = &intState;
     pass_to_thread1[1]= &sub_rotation_number;
     pass_to_thread1[2]= &intState;
@@ -479,38 +485,47 @@ int main() {
     I3.rise(&call_change_state);
     I3.fall(&call_change_state);
     motorOut(2,10);
+//       pwm_control_timer.attach(&call_thread2,1);
     while (true) {
         if (current_state != current_state_Old) {
             sub_rotation_number = 39 * rotation_number;
             current_t = t.read_ms();
             error_s = rotation_number-current_state;
             s_differential = (error_s-previous_error_s)/(current_t-previous_t);
-            error_v = rotation_speed-s_differential;
+            read_v = 1.0f/(current_t-previous_t);
+            error_v = rotation_speed-read_v;
 //            v_differential = (error_v-previous_error_v)/(current_t-previous_t);
             control_signal = k*(kp * abs(error_s) - kd * s_differential);
             control_v = k_v*(kp_v * (error_v) + kd_v * v_differential);
-            pc.printf("%e  %e    %e  %e   %f    %i\n\r",error_s,previous_error_s,rotation_speed, control_v,s_differential,lead);
+//            pc.printf("%e   %e  %e   %f    %i\n\r",current_state,rotation_speed, control_v,read_v,lead);
             previous_t = current_t;
             previous_error_s=error_s;
             previous_error_v = error_v;
-            if((control_signal>0)&&(deceleration_flag == false)){
-                if (control_v>0){
-                    lead = rotation_direction1;
-                    motorOut((intState+lead+6)%6,10); //+6 to make sure the remainder is positive
+            if(control_signal>0){
+                lead = rotation_direction1;
+                if (rotation_speed>0.012f){
+                    if (control_v>0){
+                        lead = rotation_direction1;
+                    }
+                    else {
+                        lead = rotation_direction2;
+                    }
+                    motorOut((intState+lead+6)%6,10);
                     thread1.terminate();
                 }
-                else {
+            }
+            else {
+                if ((rotation_speed>0.012f)||(read_v>0.012f)) {
                     lead = rotation_direction2;
                     motorOut((intState+lead+6)%6,10);
                 }
-            }
-            else {            
-//                thread1.start(callback(pwm_control_thread,pass_to_thread1));
-//                deceleration_flag = true;
-                lead=rotation_direction2;
+                else {
+                    thread1.start(callback(pwm_control_thread,pass_to_thread1));
+                }
             }    
 //            analog_out1.write_u16(read_v*167);
             current_state_Old = current_state;
+//            if (current_state%12==0) LED1_user=!LED1_user;
 
         }
 
