@@ -1,10 +1,8 @@
 //-------------------------------------------------------------------
 //README
+//IF POSSIBLE, PLEASE USE THIS Version as it is eaiser to read with comments
 //PWM (i.e.) fine angle control has error inside therefore, is commented out
 //if needed, please uncomment all parts with thread1 and pwm_control_thread
-
-
-
 //--------------------------------------------------------------------
 
 #include "mbed.h"
